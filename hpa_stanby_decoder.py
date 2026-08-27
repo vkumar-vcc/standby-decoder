@@ -1,14 +1,23 @@
+import argparse
 import re
 from datetime import datetime, UTC
 
-INPUT_FILE = "hp_coldboot.log"
 REQUEST = "1D12 224721"
 FE_03_REQUEST = "1D0D 22FE03"
 
 def construct_regex(request):
     return rf"^Tester\s*->\s*{re.escape(request)}\s*$.*?(?=^# Sending Request:|\Z)"
 
-with open(INPUT_FILE, "r", encoding="utf-8") as f:
+parser = argparse.ArgumentParser(description="Decode standby events from a coldboot log.")
+parser.add_argument(
+    "--input-file",
+    default="hp_coldboot.log",
+    help="Path to the coldboot log (default: hp_coldboot.log)",
+)
+args = parser.parse_args()
+input_file = args.input_file
+
+with open(input_file, "r", encoding="utf-8") as f:
     coldboot_data = f.read()
 
 request_match = re.search(
@@ -24,9 +33,9 @@ fe_03_match = re.search(
 )
 
 if request_match is None:
-    raise ValueError(f"Request '{REQUEST}' was not found in {INPUT_FILE}")
+    raise ValueError(f"Request '{REQUEST}' was not found in {input_file}")
 if fe_03_match is None:
-    raise ValueError(f"Request '{FE_03_REQUEST}' was not found in {INPUT_FILE}")
+    raise ValueError(f"Request '{FE_03_REQUEST}' was not found in {input_file}")
 
 data = request_match.group(0)
 
