@@ -1,12 +1,104 @@
 import argparse
 import re
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
 REQUEST = "1D12 224721"
 FE_03_REQUEST = "1D0D 22FE03"
+VEHICLE_TIME_REQUEST = "1D12 22DD0E"
+TRANSITION_REQUEST = "1D12 22D991"
 
 def construct_regex(request):
-    return rf"^Tester\s*->\s*{re.escape(request)}\s*$.*?(?=^# Sending Request:|\Z)"
+    address, service = request.split()
+    service_pattern = r"\s*".join(
+        re.escape(service[i:i + 2]) for i in range(0, len(service), 2)
+    )
+    return rf"^Tester\s*->\s*{address}\s+{service_pattern}\s*$.*?(?=^# Sending Request:|\Z)"
+
+
+def response_payload(block, did):
+    match = re.search(
+        r"^Complete Response:\s*1D12\s+([0-9A-Fa-f ]+)\s*$",
+        block,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return None
+    response = bytes.fromhex(match.group(1))
+    prefix = bytes.fromhex(f"62{did}")
+    if not response.startswith(prefix):
+        raise ValueError(f"Expected a positive response for DID {did}")
+    return response[len(prefix):]
+
+
+def decode_transition_rows(log):
+    history = re.search(
+        construct_regex(TRANSITION_REQUEST), log, re.MULTILINE | re.DOTALL
+    )
+    if history is None:
+        return []
+    vehicle_time = re.search(
+        construct_regex(VEHICLE_TIME_REQUEST), log, re.MULTILINE | re.DOTALL
+    )
+    if vehicle_time is None:
+        raise ValueError("Platform state history requires a Vehicle Time (22DD0E) request")
+
+    utc_match = re.search(
+        r"^Coordinated Universal Time \(UTC\):\s*(\S+)",
+        vehicle_time.group(0),
+        re.MULTILINE,
+    )
+    if utc_match:
+        utc_text = utc_match.group(1)
+    else:
+        payload = response_payload(vehicle_time.group(0), "DD0E")
+        if payload is None or len(payload) <= 4:
+            raise ValueError("Vehicle Time response is missing its UTC value")
+        utc_text = payload[4:].decode("ascii")
+    reference_utc = datetime.fromisoformat(utc_text.replace("Z", "+00:00"))
+    if reference_utc.utcoffset() != timedelta(0):
+        raise ValueError("Vehicle Time must contain an explicit UTC timestamp")
+
+    states = {
+        1: "Run",
+        2: "Standby",
+        7: "PrepareForStandby",
+        8: "PrepareForResume",
+        9: "Resume",
+        255: "Now",
+    }
+    payload = response_payload(history.group(0), "D991")
+    entries = []
+    if payload is not None:
+        if not payload or len(payload) % 9:
+            raise ValueError("Platform state history must contain 9-byte records")
+        entries = [
+            (i // 9 + 1, payload[i], int.from_bytes(payload[i + 1:i + 9], "big"))
+            for i in range(0, len(payload), 9)
+        ]
+    else:
+        state_matches = re.findall(
+            r"^State ID (\d+):\s*(\d+).*$", history.group(0), re.MULTILINE
+        )
+        timestamps = dict(re.findall(
+            r"^Timestamp (\d+):\s*(\d+)\s+ms\b", history.group(0), re.MULTILINE
+        ))
+        for index, state in state_matches:
+            if index not in timestamps:
+                raise ValueError(f"Missing timestamp for platform state entry {index}")
+            entries.append((int(index), int(state), int(timestamps[index])))
+
+    anchors = [timestamp for _, state, timestamp in entries if state == 255]
+    if len(anchors) != 1:
+        raise ValueError("Platform state history must contain exactly one Now (255) entry")
+    return [
+        [
+            index,
+            states.get(state, f"Unknown ({state})"),
+            (reference_utc + timedelta(milliseconds=timestamp - anchors[0]))
+            .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        ]
+        for index, state, timestamp in entries
+    ]
 
 parser = argparse.ArgumentParser(description="Decode standby events from a coldboot log.")
 parser.add_argument(
@@ -19,6 +111,8 @@ input_file = args.input_file
 
 with open(input_file, "r", encoding="utf-8") as f:
     coldboot_data = f.read()
+
+transition_rows = decode_transition_rows(coldboot_data)
 
 request_match = re.search(
         construct_regex(REQUEST),
@@ -186,45 +280,33 @@ for idx in sorted(records):
         ]
     )
 
-widths = [
-    max(len(str(value)) for value in column)
-    for column in zip(headers, *rows)
-]
-
-def format_row(values):
-    return "| " + " | ".join(
-        f"{str(value):<{width}}" for value, width in zip(values, widths)
-    ) + " |"
-
-def format_separator():
-    return "+-" + "-+-".join("-" * width for width in widths) + "-+"
-
-print(format_separator())
-print(format_row(headers))
-print(format_separator())
-for row in rows:
-    print(format_row(row))
-print(format_separator())
-
-if fe_03_rows:
-    fe_03_widths = [
+def print_table(table_headers, table_rows):
+    widths = [
         max(len(str(value)) for value in column)
-        for column in zip(fe_03_headers, *fe_03_rows)
+        for column in zip(table_headers, *table_rows)
     ]
 
-    def format_fe_03_row(values):
+    def format_row(values):
         return "| " + " | ".join(
             f"{str(value):<{width}}"
-            for value, width in zip(values, fe_03_widths)
+            for value, width in zip(values, widths)
         ) + " |"
 
-    def format_fe_03_separator():
-        return "+-" + "-+-".join("-" * width for width in fe_03_widths) + "-+"
+    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+    print(separator)
+    print(format_row(table_headers))
+    print(separator)
+    for row in table_rows:
+        print(format_row(row))
+    print(separator)
 
+
+print_table(headers, rows)
+
+if fe_03_rows:
     print("\nFE03 error slots (non-empty):")
-    print(format_fe_03_separator())
-    print(format_fe_03_row(fe_03_headers))
-    print(format_fe_03_separator())
-    for row in fe_03_rows:
-        print(format_fe_03_row(row))
-    print(format_fe_03_separator())
+    print_table(fe_03_headers, fe_03_rows)
+
+if transition_rows:
+    print("\nPlatform state transition history (UTC):")
+    print_table(["ID", "State", "Timestamp (UTC)"], transition_rows)
