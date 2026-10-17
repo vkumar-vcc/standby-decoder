@@ -397,16 +397,16 @@ for line in data.splitlines():
         records.setdefault(idx, {})["timestamp"] = int(m.group(2))
         continue
 
-    m = re.match(r"Shutdown Type (\d+): .*?Sleep", line)
+    m = re.match(r"Shutdown Type (\d+):\s*(?:\d+\s+)?(\S.*?)\s*$", line)
     if m:
         idx = int(m.group(1))
-        records.setdefault(idx, {})["shutdown_type"] = "Sleep"
+        records.setdefault(idx, {})["shutdown_type"] = m.group(2)
         continue
 
-    m = re.match(r"VcuShutdownIntent from VMM (\d+): .*?StandbyWithInSystemTestRequested", line)
+    m = re.match(r"VcuShutdownIntent from VMM (\d+):\s*(?:\d+\s+)?(\S.*?)\s*$", line, re.IGNORECASE)
     if m:
         idx = int(m.group(1))
-        records.setdefault(idx, {})["intent"] = "StandbyWithInSystemTestRequested"
+        records.setdefault(idx, {})["intent"] = m.group(2)
         continue
 
     m = re.match(r"ISTWakeUpTimer (\d+): (\d+)", line)
