@@ -566,13 +566,28 @@ class DecoderTests(unittest.TestCase):
                 self.assertNotIn("Total: 0 failure", result.stdout)
                 self.assertNotIn("No watchdog failure entries recorded.", result.stdout)
 
+    def test_watchdog_overloaded_decodes_with_warning(self):
+        timeline = "app_a,2026-07-28T00:09:39\n"
+        for body in [
+            "Complete Response: 1D12 62D99D0102" + timeline.encode("ascii").hex() + "\n",
+            "Data structure version: 1\nData Health: 2 Overloaded\n"
+            "Application name and timeline: " + timeline,
+        ]:
+            with self.subTest(body=body):
+                result = self.run_decoder(
+                    "# Sending Request:\nTester -> 1D12 22D99D\n" + body
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Data Health 2 (Overloaded)", result.stdout)
+                self.assertIn("Total: 1 failure entries", result.stdout)
+
     def test_watchdog_corrupt_data_still_fails(self):
         result = self.run_decoder(
             "# Sending Request:\nTester -> 1D12 22D99D\n"
-            "Complete Response: 1D12 62D99D0102\n"
+            "Complete Response: 1D12 62D99D0101\n"
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("data health error: 2", result.stderr)
+        self.assertIn("data health error: 1", result.stderr)
 
     def test_rows_after_now_are_hidden(self):
         histories = [

@@ -67,19 +67,24 @@ def decode_watchdog_rows(log):
             raise ValueError("Watchdog response is missing version and data health")
         if payload[0] != 1:
             raise ValueError(f"Unsupported watchdog data structure version: {payload[0]}")
-        if payload[1] == 3:
-            return None, "Watchdog timeline unavailable: Data Health 3 (No data available)."
-        if payload[1] != 0:
-            raise ValueError(f"Watchdog response reports data health error: {payload[1]}")
+        health = payload[1]
+    else:
+        health_match = re.search(r"^Data Health:\s*(\d+)", block, re.MULTILINE)
+        health = int(health_match.group(1)) if health_match else 0
+    if health == 3:
+        return None, "Watchdog timeline unavailable: Data Health 3 (No data available)."
+    if health not in (0, 2):
+        raise ValueError(f"Watchdog response reports data health error: {health}")
+    status = None
+    if health == 2:
+        status = (
+            "Watchdog timeline Data Health 2 (Overloaded): the buffer overflowed and only "
+            "the latest entries are kept, so failure counts are incomplete."
+        )
+
+    if payload is not None:
         timeline = payload[2:].rstrip(b"\x00").decode("ascii")
     else:
-        health = re.search(r"^Data Health:\s*(\d+)", block, re.MULTILINE)
-        if health and int(health.group(1)) == 3:
-            return None, "Watchdog timeline unavailable: Data Health 3 (No data available)."
-        if health and int(health.group(1)) != 0:
-            raise ValueError(
-                f"Watchdog response reports data health error: {health.group(1)}"
-            )
         marker = "Application name and timeline:"
         if marker not in block:
             raise ValueError("Watchdog response is missing its application timeline")
@@ -94,7 +99,7 @@ def decode_watchdog_rows(log):
             raise ValueError(f"Invalid watchdog timeline entry: {line!r}")
         datetime.fromisoformat(timestamp)
         rows.append([len(rows) + 1, application, timestamp])
-    return rows, None
+    return rows, status
 
 
 def summarize_watchdog_rows(rows):
